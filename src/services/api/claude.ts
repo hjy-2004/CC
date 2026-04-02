@@ -814,11 +814,42 @@ function isOpenAICompatModeEnabled(): boolean {
   return Boolean(process.env.OPENAI_BASE_URL && process.env.OPENAI_API_KEY)
 }
 
+type OpenAICompatMessage =
+  | { role: 'system' | 'user' | 'assistant'; content: string }
+  | { role: 'assistant'; content: string; tool_calls: OpenAICompatToolCall[] }
+  | { role: 'tool'; tool_call_id: string; content: string }
+
+type OpenAICompatToolCall = {
+  id: string
+  type: 'function'
+  function: {
+    name: string
+    arguments: string
+  }
+}
+
+function normalizeBlockText(block: unknown): string {
+  if (!block || typeof block !== 'object') return ''
+  if ('text' in block && typeof block.text === 'string') return block.text
+  return ''
+}
+
+function normalizeToolResultContent(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content.map(normalizeBlockText).filter(Boolean).join('\n').trim()
+  }
+  if (content && typeof content === 'object') {
+    return JSON.stringify(content)
+  }
+  return ''
+}
+
 function toOpenAICompatibleMessages(
   messages: Message[],
   systemPrompt: SystemPrompt,
-): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
-  const out: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = []
+): OpenAICompatMessage[] {
+  const out: OpenAICompatMessage[] = []
 
   const systemText = systemPrompt.join('\n\n').trim()
   if (systemText) {
@@ -828,19 +859,80 @@ function toOpenAICompatibleMessages(
   for (const msg of messages) {
     if (msg.type !== 'user' && msg.type !== 'assistant') continue
 
-    const role = msg.type
-    const raw = msg.message.content
-    const text =
-      typeof raw === 'string'
-        ? raw
-        : raw
-            .filter(block => block?.type === 'text' && 'text' in block)
-            .map(block => String(block.text ?? ''))
-            .join('\n')
-            .trim()
+    const content = msg.message.content
+    const blocks = Array.isArray(content) ? content : []
 
-    if (!text) continue
-    out.push({ role, content: text })
+    if (msg.type === 'assistant') {
+      if (typeof content === 'string') {
+        if (content.trim()) {
+          out.push({ role: 'assistant', content })
+        }
+        continue
+      }
+
+      const text = blocks
+        .filter(block => block?.type === 'text' && 'text' in block)
+        .map(block => String(block.text ?? ''))
+        .join('\n')
+        .trim()
+
+      const toolCalls: OpenAICompatToolCall[] = blocks
+        .filter(block => block?.type === 'tool_use')
+        .map(block => {
+          const id = String(block.id ?? randomUUID())
+          const name = String(block.name ?? '')
+          const args =
+            block.input && typeof block.input === 'object'
+              ? JSON.stringify(block.input)
+              : '{}'
+          return {
+            id,
+            type: 'function',
+            function: { name, arguments: args },
+          }
+        })
+
+      if (toolCalls.length > 0) {
+        out.push({
+          role: 'assistant',
+          content: text,
+          tool_calls: toolCalls,
+        })
+      } else if (text) {
+        out.push({ role: 'assistant', content: text })
+      }
+
+      continue
+    }
+
+    if (typeof content === 'string') {
+      if (content.trim()) {
+        out.push({ role: 'user', content })
+      }
+      continue
+    }
+
+    const text = blocks
+      .filter(block => block?.type === 'text' && 'text' in block)
+      .map(block => String(block.text ?? ''))
+      .join('\n')
+      .trim()
+
+    if (text) {
+      out.push({ role: 'user', content: text })
+    }
+
+    for (const block of blocks) {
+      if (block?.type !== 'tool_result') continue
+      const toolCallId = String(block.tool_use_id ?? '')
+      if (!toolCallId) continue
+      const toolContent = normalizeToolResultContent(block.content)
+      out.push({
+        role: 'tool',
+        tool_call_id: toolCallId,
+        content: toolContent || 'ok',
+      })
+    }
   }
 
   return out
@@ -850,10 +942,30 @@ async function queryOpenAICompatibleText(
   messages: Message[],
   systemPrompt: SystemPrompt,
   options: Options,
+  tools: Tools,
 ): Promise<AssistantMessage> {
   const baseURL = process.env.OPENAI_BASE_URL!.replace(/\/+$/, '')
   const apiKey = process.env.OPENAI_API_KEY!
   const model = process.env.OPENAI_MODEL || options.model
+  const openAITools = await Promise.all(
+    tools.map(async tool => {
+      const schema = await toolToAPISchema(tool, {
+        getToolPermissionContext: options.getToolPermissionContext,
+        tools,
+        agents: options.agents,
+        allowedAgentTypes: options.allowedAgentTypes,
+        model: options.model,
+      })
+      return {
+        type: 'function' as const,
+        function: {
+          name: schema.name,
+          description: schema.description || '',
+          parameters: schema.input_schema,
+        },
+      }
+    }),
+  )
 
   const response = await fetch(`${baseURL}/chat/completions`, {
     method: 'POST',
@@ -864,6 +976,13 @@ async function queryOpenAICompatibleText(
     body: JSON.stringify({
       model,
       messages: toOpenAICompatibleMessages(messages, systemPrompt),
+      tools: openAITools,
+      tool_choice:
+        options.toolChoice && options.toolChoice.type === 'tool'
+          ? { type: 'function', function: { name: options.toolChoice.name } }
+          : options.toolChoice?.type === 'any'
+            ? 'required'
+            : 'auto',
       temperature: options.temperatureOverride ?? 1,
       stream: false,
     }),
@@ -879,7 +998,15 @@ async function queryOpenAICompatibleText(
     choices?: Array<{
       message?: {
         content?: string | Array<{ type?: string; text?: string }>
+        tool_calls?: Array<{
+          id?: string
+          function?: {
+            name?: string
+            arguments?: string
+          }
+        }>
       }
+      finish_reason?: string
     }>
     usage?: {
       prompt_tokens?: number
@@ -887,7 +1014,8 @@ async function queryOpenAICompatibleText(
     }
   }
 
-  const rawContent = data.choices?.[0]?.message?.content
+  const choice = data.choices?.[0]
+  const rawContent = choice?.message?.content
   const text =
     typeof rawContent === 'string'
       ? rawContent
@@ -895,6 +1023,29 @@ async function queryOpenAICompatibleText(
           .map(part => part?.text ?? '')
           .join('\n')
           .trim()
+
+  const toolUses = (choice?.message?.tool_calls ?? []).map(tc => {
+    const id = tc.id || randomUUID()
+    const name = tc.function?.name || 'unknown_tool'
+    const argsRaw = tc.function?.arguments || '{}'
+    let input: Record<string, unknown> = {}
+    try {
+      input = JSON.parse(argsRaw) as Record<string, unknown>
+    } catch {
+      input = {}
+    }
+    return {
+      type: 'tool_use' as const,
+      id,
+      name,
+      input,
+    }
+  })
+
+  const contentBlocks = [
+    ...(text ? [{ type: 'text' as const, text }] : []),
+    ...toolUses,
+  ]
 
   return {
     type: 'assistant',
@@ -905,8 +1056,8 @@ async function queryOpenAICompatibleText(
       id: data.id,
       role: 'assistant',
       model,
-      content: [{ type: 'text', text }],
-      stop_reason: 'end_turn',
+      content: normalizeContentFromAPI(contentBlocks as BetaContentBlock[], tools),
+      stop_reason: toolUses.length > 0 ? 'tool_use' : 'end_turn',
       usage: {
         input_tokens: data.usage?.prompt_tokens ?? 0,
         output_tokens: data.usage?.completion_tokens ?? 0,
@@ -1159,6 +1310,7 @@ async function* queryModel(
         messages,
         systemPrompt,
         options,
+        tools,
       )
       yield assistant
       return
