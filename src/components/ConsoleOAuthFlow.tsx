@@ -30,6 +30,9 @@ type OAuthStatus = {
   state: 'platform_setup';
 } // Show platform setup info (Bedrock/Vertex/Foundry)
 | {
+  state: 'custom_config';
+} // Show custom configuration guidance (API key / proxy / gateway)
+| {
   state: 'ready_to_start';
 } // Flow started, waiting for browser to open
 | {
@@ -403,8 +406,11 @@ function OAuthStatusMessage(t0) {
         let t6;
         if ($[5] === Symbol.for("react.memo_cache_sentinel")) {
           t6 = [t4, t5, {
-            label: <Text>3rd-party platform ·{" "}<Text dimColor={true}>Amazon Bedrock, Microsoft Foundry, or Vertex AI</Text>{"\n"}</Text>,
+            label: <Text>3rd-party platform ·{" "}<Text dimColor={true}>Amazon Bedrock, Microsoft Foundry, Vertex AI, API key, or custom gateway</Text>{"\n"}</Text>,
             value: "platform"
+          }, {
+            label: <Text>Custom configuration ·{" "}<Text dimColor={true}>API key, proxy, or custom gateway</Text>{"\n"}</Text>,
+            value: "custom"
           }];
           $[5] = t6;
         } else {
@@ -413,7 +419,7 @@ function OAuthStatusMessage(t0) {
         let t7;
         if ($[6] !== setLoginWithClaudeAi || $[7] !== setOAuthStatus) {
           t7 = <Box><Select options={t6} onChange={value_0 => {
-              if (value_0 === "platform") {
+              if (value_0 === "platform" || value_0 === "custom") {
                 logEvent("tengu_oauth_platform_selected", {});
                 setOAuthStatus({
                   state: "platform_setup"
@@ -452,7 +458,7 @@ function OAuthStatusMessage(t0) {
       {
         let t1;
         if ($[12] === Symbol.for("react.memo_cache_sentinel")) {
-          t1 = <Text bold={true}>Using 3rd-party platforms</Text>;
+          t1 = <Text bold={true}>Using 3rd-party or custom configuration</Text>;
           $[12] = t1;
         } else {
           t1 = $[12];
@@ -460,7 +466,7 @@ function OAuthStatusMessage(t0) {
         let t2;
         let t3;
         if ($[13] === Symbol.for("react.memo_cache_sentinel")) {
-          t2 = <Text>Claude Code supports Amazon Bedrock, Microsoft Foundry, and Vertex AI. Set the required environment variables, then restart Claude Code.</Text>;
+          t2 = <Text>Claude Code supports Amazon Bedrock, Microsoft Foundry, Vertex AI, and custom setups. For custom setups, configure environment variables such as ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL, then restart Claude Code.</Text>;
           t3 = <Text>If you are part of an enterprise organization, contact your administrator for setup instructions.</Text>;
           $[13] = t2;
           $[14] = t3;

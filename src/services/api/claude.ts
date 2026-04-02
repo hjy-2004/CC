@@ -810,6 +810,111 @@ function getNonstreamingFallbackTimeoutMs(): number {
   return isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) ? 120_000 : 300_000
 }
 
+function isOpenAICompatModeEnabled(): boolean {
+  return Boolean(process.env.OPENAI_BASE_URL && process.env.OPENAI_API_KEY)
+}
+
+function toOpenAICompatibleMessages(
+  messages: Message[],
+  systemPrompt: SystemPrompt,
+): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
+  const out: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = []
+
+  const systemText = systemPrompt.join('\n\n').trim()
+  if (systemText) {
+    out.push({ role: 'system', content: systemText })
+  }
+
+  for (const msg of messages) {
+    if (msg.type !== 'user' && msg.type !== 'assistant') continue
+
+    const role = msg.type
+    const raw = msg.message.content
+    const text =
+      typeof raw === 'string'
+        ? raw
+        : raw
+            .filter(block => block?.type === 'text' && 'text' in block)
+            .map(block => String(block.text ?? ''))
+            .join('\n')
+            .trim()
+
+    if (!text) continue
+    out.push({ role, content: text })
+  }
+
+  return out
+}
+
+async function queryOpenAICompatibleText(
+  messages: Message[],
+  systemPrompt: SystemPrompt,
+  options: Options,
+): Promise<AssistantMessage> {
+  const baseURL = process.env.OPENAI_BASE_URL!.replace(/\/+$/, '')
+  const apiKey = process.env.OPENAI_API_KEY!
+  const model = process.env.OPENAI_MODEL || options.model
+
+  const response = await fetch(`${baseURL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      messages: toOpenAICompatibleMessages(messages, systemPrompt),
+      temperature: options.temperatureOverride ?? 1,
+      stream: false,
+    }),
+  })
+
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(`OpenAI-compatible request failed (${response.status}): ${body}`)
+  }
+
+  const data = (await response.json()) as {
+    id?: string
+    choices?: Array<{
+      message?: {
+        content?: string | Array<{ type?: string; text?: string }>
+      }
+    }>
+    usage?: {
+      prompt_tokens?: number
+      completion_tokens?: number
+    }
+  }
+
+  const rawContent = data.choices?.[0]?.message?.content
+  const text =
+    typeof rawContent === 'string'
+      ? rawContent
+      : (rawContent ?? [])
+          .map(part => part?.text ?? '')
+          .join('\n')
+          .trim()
+
+  return {
+    type: 'assistant',
+    uuid: randomUUID(),
+    timestamp: new Date().toISOString(),
+    requestId: data.id,
+    message: {
+      id: data.id,
+      role: 'assistant',
+      model,
+      content: [{ type: 'text', text }],
+      stop_reason: 'end_turn',
+      usage: {
+        input_tokens: data.usage?.prompt_tokens ?? 0,
+        output_tokens: data.usage?.completion_tokens ?? 0,
+      },
+    },
+  }
+}
+
 /**
  * Helper generator for non-streaming API requests.
  * Encapsulates the common pattern of creating a withRetry generator,
@@ -1046,6 +1151,21 @@ async function* queryModel(
       options.model,
     )
     return
+  }
+
+  if (isOpenAICompatModeEnabled()) {
+    try {
+      const assistant = await queryOpenAICompatibleText(
+        messages,
+        systemPrompt,
+        options,
+      )
+      yield assistant
+      return
+    } catch (error) {
+      yield getAssistantMessageFromError(error as Error, options.model)
+      return
+    }
   }
 
   // Derive previous request ID from the last assistant message in this query chain.
