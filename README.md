@@ -37,6 +37,61 @@ bun run dev
 bun run version
 ```
 
+## OpenAI 兼容模型（DeepSeek 等）使用说明
+
+本仓库已增加 OpenAI-compatible 的最小可用对话支持（不影响原 Anthropic 流程）。
+
+### 1) 配置环境变量（Windows / PowerShell）
+
+```powershell
+setx OPENAI_BASE_URL "https://api.deepseek.com"
+setx OPENAI_API_KEY "<your-api-key>"
+setx OPENAI_MODEL "deepseek-chat"
+```
+
+> `setx` 写入的是用户级环境变量；需要**新开终端**后才生效。
+
+可用以下命令验证：
+
+```powershell
+echo $env:OPENAI_BASE_URL
+echo $env:OPENAI_MODEL
+```
+
+### 2) 启动方式
+
+- 在仓库目录启动：`bun run dev`
+- 或使用全局 PowerShell 函数（见下文 `ccx`）：可在任意目录启动
+
+### 3) 当前能力范围
+
+- ✅ 基础对话可用
+- ✅ 已接入 OpenAI 格式 `tool_calls` / `tool` 消息映射（持续完善中）
+- ⚠️ 与原生 Anthropic 全量功能仍有差异，建议先按实际场景逐步验证
+
+## 任意目录启动（PowerShell `ccx`）
+
+如果你不想每次切到 `D:\CC`，可在 PowerShell profile 里添加：
+
+文件：`C:\Users\<用户名>\OneDrive\文档\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`
+
+```powershell
+function ccx {
+  bun run "D:\CC\src\dev-entry.ts" @args
+}
+```
+
+然后重开 PowerShell，在任意目录运行：
+
+```powershell
+ccx
+ccx --version
+```
+
+> 注意：`ccx` 是 PowerShell 函数，`cmd.exe` 里不能直接用。
+>
+> `cmd.exe` 请改用：`bun run D:\CC\src\dev-entry.ts`
+
 ## 目录结构
 
 ```
