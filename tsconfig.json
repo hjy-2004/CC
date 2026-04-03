@@ -9,21 +9,29 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "strict": false,
     "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
     "paths": {
       "src/*": [
         "./src/*"
       ]
     },
     "types": [
-      "bun"
+      "bun-types"
     ]
   },
   "include": [
     "src/**/*",
     "vendor/**/*",
     "shims/**/*"
+  ],
+  "exclude": [
+    "**/*.js",
+    "**/*.jsx",
+    "**/*.mjs",
+    "**/*.cjs"
   ]
 }
